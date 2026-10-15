@@ -1,0 +1,513 @@
+<!doctype html>
+<html lang="en-AU">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>WIP &amp; SIP Bingo</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..800&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap">
+<style>
+  /* Layout: one column. Header with wordmark and tabs, then a single view (join, pick 3, my card, or live board). */
+  :root {
+    color-scheme: light;
+    --bg: #F1F4F8;
+    --surface: #FFFFFF;
+    --surface-2: #E7ECF2;
+    --ink: #0F1B2D;
+    --muted: #556275;
+    --line: #D3DAE4;
+    --accent: #0B8F7F;
+    --accent-soft: #D7F0EC;
+    --on-accent: #FFFFFF;
+    --stamp: #D92D3A;
+    --stamp-soft: #FCE6E8;
+    --display: "Bricolage Grotesque", "Trebuchet MS", system-ui, sans-serif;
+    --body: "Instrument Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --bg: #0B1320; --surface: #121D2E; --surface-2: #1A283C; --ink: #E8EEF6; --muted: #93A1B5;
+      --line: #27364C; --accent: #3CCDB8; --accent-soft: #123530; --on-accent: #07201C;
+      --stamp: #FF6B74; --stamp-soft: #3A1E26;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 15px;
+    line-height: 1.5;
+    padding-block: 20px 40px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+  }
+  .wrap { max-width: 1120px; margin: 0 auto; display: flex; flex-direction: column; gap: 22px; }
+
+  header { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px 24px; }
+  .brand { min-width: 0; }
+  .brand h1 { margin: 0; font: 800 clamp(30px, 7vw, 46px)/1 var(--display); letter-spacing: -0.025em; }
+  .brand h1 .amp { color: var(--accent); }
+  .brand .sub { margin-top: 6px; font: 500 12px/1 var(--mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+
+  nav { display: flex; gap: 6px; flex-wrap: wrap; }
+  .tab {
+    font: 600 14px/1 var(--body); padding: 10px 14px; border-radius: 8px; cursor: pointer;
+    border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+  }
+  .tab[aria-current="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  .tab .n { font-family: var(--mono); font-weight: 500; margin-left: 6px; opacity: 0.75; }
+
+  button { font-family: inherit; }
+  button:focus-visible, input:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+  .notice { padding: 12px 14px; border-radius: 8px; background: var(--stamp-soft); color: var(--ink); border: 1px solid var(--stamp); }
+  .notice.info { background: var(--surface-2); border-color: var(--line); }
+
+  .panel { max-width: 560px; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  .panel h2 { margin: 0; font: 700 clamp(22px, 5vw, 28px)/1.15 var(--display); letter-spacing: -0.015em; text-wrap: balance; }
+  .panel p { margin: 0; color: var(--muted); max-width: 60ch; }
+
+  form.join { display: flex; flex-direction: column; gap: 12px; max-width: 420px; }
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  label.lbl { font: 500 12px/1 var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+  input[type="text"] {
+    font: 500 18px/1.2 var(--body); padding: 13px 14px; border-radius: 8px; width: 100%;
+    border: 1.5px solid var(--line); background: var(--surface); color: var(--ink);
+  }
+  .btn {
+    font: 700 16px/1 var(--body); padding: 14px 18px; border-radius: 8px; cursor: pointer;
+    border: 0; background: var(--accent); color: var(--on-accent); align-self: flex-start;
+  }
+  .btn:disabled { background: var(--surface-2); color: var(--muted); cursor: not-allowed; }
+  .btn.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); font-weight: 600; font-size: 14px; padding: 10px 14px; }
+  .btn.danger { border-color: var(--stamp); color: var(--stamp); }
+  .err { color: var(--stamp); font-weight: 600; min-height: 1.4em; }
+
+  /* Cards */
+  .grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px; }
+  .cell {
+    position: relative; aspect-ratio: 1; display: flex; align-items: center; justify-content: center;
+    padding: 2px; min-width: 0; text-align: center; overflow-wrap: break-word;
+    font: 500 clamp(8.5px, 2.3vw, 13.5px)/1.15 var(--body);
+    border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); cursor: pointer;
+  }
+  .cell.pick { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+  .cell.on { background: var(--stamp-soft); color: var(--muted); }
+  .cell.on::before, .cell.on::after {
+    content: ""; position: absolute; left: 10%; right: 10%; top: 50%; height: 3px; margin-top: -1.5px;
+    background: var(--stamp); border-radius: 2px; pointer-events: none;
+  }
+  .cell.on::before { transform: rotate(42deg); }
+  .cell.on::after { transform: rotate(-42deg); }
+
+  .slot { border: 2px dashed var(--accent); background: var(--accent-soft); cursor: pointer; font-weight: 600; }
+  .slot.empty { color: var(--accent); font: 500 11px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; }
+  .idle { background: var(--surface-2); border-color: transparent; cursor: default; }
+
+  .meta { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 16px; }
+  .count { font: 500 14px/1 var(--mono); }
+  .status { font-size: 13px; color: var(--muted); min-height: 1.3em; }
+  .status.bad { color: var(--stamp); font-weight: 600; }
+  .legend { font-size: 13px; color: var(--muted); display: flex; gap: 8px; align-items: center; }
+  .legend i { width: 14px; height: 14px; border: 1px solid var(--accent); box-shadow: inset 0 0 0 1px var(--accent); border-radius: 3px; display: inline-block; flex: none; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip {
+    font: 500 14px/1.2 var(--body); padding: 8px 11px; border-radius: 999px; cursor: pointer;
+    border: 1px solid var(--line); background: var(--surface); color: var(--ink); text-align: left;
+  }
+  .chip[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--ink); font-weight: 600; }
+  .chip:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  /* Live board */
+  .boardhead { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 16px; }
+  .boardhead h2 { margin: 0; font: 700 clamp(22px, 5vw, 28px)/1.15 var(--display); letter-spacing: -0.015em; }
+  .boardhead .hint { color: var(--muted); font-size: 13px; }
+  .boards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap: 16px; }
+  .mini { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+  .mini.me { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .mini .top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; }
+  .mini .nm { font: 700 17px/1.2 var(--display); overflow-wrap: anywhere; }
+  .mini .nm small { font: 500 11px/1 var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent); margin-left: 6px; }
+  .mini .ct { font: 500 13px/1 var(--mono); color: var(--muted); flex: none; }
+  .mini .cell { font-size: 9px; padding: 2px; border-radius: 3px; cursor: default; line-height: 1.12; }
+  .mini .cell.on::before, .mini .cell.on::after { height: 2px; margin-top: -1px; }
+  .mini .grid { gap: 3px; }
+  .empty-state { padding: 28px 18px; border: 1.5px dashed var(--line); border-radius: 10px; color: var(--muted); max-width: 560px; }
+  @keyframes pop { 0% { transform: scale(1.18); } 100% { transform: scale(1); } }
+  .pop { animation: pop 0.35s ease-out; }
+  @media (prefers-reduced-motion: reduce) { .pop { animation: none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <h1>WIP <span class="amp">&amp;</span> SIP</h1>
+      <div class="sub">All hands bingo</div>
+    </div>
+    <nav id="nav" aria-label="Views"></nav>
+  </header>
+  <div id="notice" class="notice" hidden></div>
+  <main id="main"></main>
+</div>
+
+<script>
+(function () {
+  var WORDS = [];
+  var codeRequired = false;
+  var SLOTS = [3, 12, 21]; // must match server.js
+
+  var main = document.getElementById("main");
+  var navEl = document.getElementById("nav");
+  var noticeEl = document.getElementById("notice");
+
+  var players = new Map();
+  var me = loadMe();                 // { id, token } once this browser has a card
+  var loaded = false;                // first live update received
+  var tab = location.pathname === "/board" ? "board" : "card";
+  var step = "join";
+  var draft = { name: "", code: "", picks: [null, null, null] };
+  var joinError = "";
+  var localMarks = new Set();
+  var pending = 0, chain = Promise.resolve(), confirmReset = false;
+  var rendered = null;
+  var prevMarks = new Map();
+  var cardCells = [], countEl = null, statusEl = null;
+
+  function loadMe() {
+    try { var v = JSON.parse(localStorage.getItem("wipsip-me")); if (v && v.id && v.token) return v; } catch (e) {}
+    return null;
+  }
+  function saveMe(v) {
+    try { if (v) localStorage.setItem("wipsip-me", JSON.stringify(v)); else localStorage.removeItem("wipsip-me"); } catch (e) {}
+  }
+
+  function h(tag, props) {
+    var el = document.createElement(tag);
+    props = props || {};
+    Object.keys(props).forEach(function (k) {
+      var v = props[k];
+      if (v === false || v == null) return;
+      if (k === "class") el.className = v;
+      else if (k === "text") el.textContent = v;
+      else if (k.slice(0, 2) === "on") el.addEventListener(k.slice(2), v);
+      else if (v === true) el.setAttribute(k, "");
+      else el.setAttribute(k, v);
+    });
+    for (var i = 2; i < arguments.length; i++) {
+      var c = arguments[i];
+      if (c == null || c === false) continue;
+      if (Array.isArray(c)) c.forEach(function (x) { if (x) el.append(x.nodeType ? x : document.createTextNode(x)); });
+      else el.append(c.nodeType ? c : document.createTextNode(c));
+    }
+    return el;
+  }
+
+  function post(path, body) {
+    return fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  }
+  function setNotice(text, info) {
+    if (!text) { noticeEl.hidden = true; return; }
+    noticeEl.className = "notice" + (info ? " info" : "");
+    noticeEl.textContent = text;
+    noticeEl.hidden = false;
+  }
+
+  function mine() { return me ? players.get(me.id) : null; }
+  function route() {
+    if (tab === "board") return "board";
+    if (me && !loaded) return "loading";
+    if (mine()) return "card";
+    return step;
+  }
+
+  /* ---------- navigation ---------- */
+  function setTab(t) {
+    tab = t;
+    try { history.pushState(null, "", t === "board" ? "/board" : "/"); } catch (e) {}
+    render();
+  }
+  function renderNav() {
+    navEl.replaceChildren();
+    var joined = !!mine();
+    var boardBtn = h("button", { class: "tab", type: "button", "aria-current": tab === "board" ? "true" : "false", onclick: function () { setTab("board"); } },
+      "Live board", h("span", { class: "n", text: String(players.size) }));
+    if (joined) {
+      navEl.append(
+        h("button", { class: "tab", type: "button", "aria-current": tab === "card" ? "true" : "false", onclick: function () { setTab("card"); } }, "My card"),
+        boardBtn
+      );
+    } else if (tab === "board") {
+      navEl.append(h("button", { class: "tab", type: "button", onclick: function () { setTab("card"); } }, "Join the game"), boardBtn);
+    } else {
+      navEl.append(boardBtn);
+    }
+  }
+
+  /* ---------- join ---------- */
+  function joinView() {
+    var nameInput = h("input", { type: "text", id: "name", maxlength: "24", autocomplete: "given-name", placeholder: "e.g. Sam", value: draft.name,
+      oninput: function () { draft.name = nameInput.value; } });
+    var codeInput = codeRequired ? h("input", { type: "text", id: "code", maxlength: "40", autocomplete: "off", placeholder: "Game code", value: draft.code,
+      oninput: function () { draft.code = codeInput.value; } }) : null;
+    var err = h("div", { class: "err", role: "alert", text: joinError });
+    joinError = "";
+    var form = h("form", { class: "join", onsubmit: function (e) {
+      e.preventDefault();
+      var v = nameInput.value.trim().replace(/\s+/g, " ");
+      if (!v) { err.textContent = "Enter your first name to get a card."; return; }
+      if (codeRequired && !codeInput.value.trim()) { err.textContent = "Enter the game code."; return; }
+      draft.name = v; draft.picks = [null, null, null]; step = "pick"; render();
+    } },
+      h("div", { class: "field" }, h("label", { class: "lbl", for: "name", text: "First name" }), nameInput),
+      codeRequired ? h("div", { class: "field" }, h("label", { class: "lbl", for: "code", text: "Game code" }), codeInput) : null,
+      err,
+      h("button", { class: "btn", type: "submit" }, "Get my card"));
+    return h("section", { class: "panel" },
+      h("h2", { text: "Mark a square when you hear it said." }),
+      h("p", { text: "Your card has 25 squares. You choose 3 of them from the buzzword list and the other 22 are dealt at random. Tap a square to put an X on it." }),
+      form);
+  }
+
+  /* ---------- pick 3 ---------- */
+  function pickView() {
+    var filled = draft.picks.filter(Boolean).length;
+    var err = h("div", { class: "err", role: "alert" });
+    var grid = h("div", { class: "grid", "aria-label": "Your card with three squares to fill" });
+    for (var i = 0; i < 25; i++) {
+      var s = SLOTS.indexOf(i);
+      if (s >= 0) {
+        (function (s) {
+          var w = draft.picks[s];
+          grid.append(h("button", {
+            type: "button", class: "cell slot" + (w ? "" : " empty"),
+            "aria-label": w ? "Remove " + w : "Empty square, choose a phrase below",
+            onclick: function () { if (draft.picks[s]) { draft.picks[s] = null; render(); } }
+          }, w || "Pick"));
+        })(s);
+      } else {
+        grid.append(h("div", { class: "cell idle", "aria-hidden": "true" }));
+      }
+    }
+    var chips = h("div", { class: "chips" });
+    WORDS.forEach(function (w) {
+      var on = draft.picks.indexOf(w) >= 0;
+      chips.append(h("button", {
+        type: "button", class: "chip", "aria-pressed": on ? "true" : "false",
+        disabled: !on && filled >= 3,
+        onclick: function () {
+          var idx = draft.picks.indexOf(w);
+          if (idx >= 0) draft.picks[idx] = null;
+          else { var e = draft.picks.indexOf(null); if (e >= 0) draft.picks[e] = w; }
+          render();
+        }
+      }, w));
+    });
+    var done = h("button", { class: "btn", type: "button", disabled: filled < 3, onclick: function () { createCard(done, err); } }, "Done");
+    return h("section", { class: "panel" },
+      h("h2", { text: "Hi " + draft.name + ", choose your 3." }),
+      h("p", { text: "Pick the three phrases you most expect to hear. They go in the highlighted squares. The rest of your card is filled at random when you tap Done." }),
+      grid,
+      h("div", { class: "count", text: filled + " of 3 chosen" }),
+      chips, err,
+      h("div", { style: "display:flex;gap:8px;flex-wrap:wrap" },
+        done,
+        h("button", { class: "btn ghost", type: "button", onclick: function () { step = "join"; render(); } }, "Change name")));
+  }
+
+  async function createCard(btn, err) {
+    btn.disabled = true; err.textContent = "";
+    try {
+      var r = await post("/api/join", { name: draft.name, code: draft.code, picks: draft.picks });
+      var data = await r.json().catch(function () { return {}; });
+      if (!r.ok) {
+        if (r.status === 403) { joinError = data.error || "That game code is not right."; step = "join"; render(); return; }
+        btn.disabled = false;
+        err.textContent = data.error || "Could not save your card. Tap Done to try again.";
+        return;
+      }
+      me = { id: data.id, token: data.token };
+      saveMe(me);
+      players.set(me.id, data.player);
+      localMarks = new Set();
+      tab = "card"; step = "join";
+      try { history.replaceState(null, "", "/"); } catch (e) {}
+      render();
+    } catch (e) {
+      btn.disabled = false;
+      err.textContent = "Could not reach the game. Check your connection and tap Done again.";
+    }
+  }
+
+  /* ---------- my card ---------- */
+  function cardView() {
+    var p = mine();
+    var picks = p.picks || [];
+    cardCells = [];
+    var grid = h("div", { class: "grid", role: "group", "aria-label": "Your bingo card" });
+    p.cells.forEach(function (w, i) {
+      var b = h("button", {
+        type: "button", class: "cell" + (picks.indexOf(w) >= 0 ? " pick" : ""),
+        "aria-pressed": localMarks.has(i) ? "true" : "false",
+        onclick: function () { toggle(i); }
+      }, w);
+      cardCells.push(b);
+      grid.append(b);
+    });
+    countEl = h("span", { class: "count" });
+    statusEl = h("div", { class: "status", "aria-live": "polite" });
+    var reset = h("button", { class: "btn ghost", type: "button", onclick: function () {
+      if (!confirmReset) { confirmReset = true; reset.textContent = "Tap again to delete this card"; reset.classList.add("danger"); return; }
+      resetCard();
+    } }, "Start over with a new card");
+    var view = h("section", { class: "panel" },
+      h("div", { class: "meta" }, h("h2", { text: p.name + "'s card" }), countEl),
+      grid,
+      h("div", { class: "legend" }, h("i"), h("span", { text: "Teal edges mark the 3 phrases you picked." })),
+      statusEl,
+      h("div", null, reset));
+    syncCard();
+    return view;
+  }
+  function syncCard() {
+    cardCells.forEach(function (b, i) {
+      var on = localMarks.has(i);
+      b.classList.toggle("on", on);
+      b.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+    if (countEl) countEl.textContent = localMarks.size + " of 25 marked";
+  }
+  function setStatus(text, bad) {
+    if (!statusEl) return;
+    statusEl.className = "status" + (bad ? " bad" : "");
+    statusEl.textContent = text;
+  }
+  function toggle(i) {
+    var on = !localMarks.has(i);
+    if (on) localMarks.add(i); else localMarks.delete(i);
+    syncCard();
+    setStatus("Saving...");
+    pending++;
+    chain = chain.then(function () {
+      return post("/api/mark", { token: me.token, index: i, on: on }).then(function (r) { if (!r.ok) throw new Error("mark failed"); });
+    }).then(function () {
+      pending--;
+      if (pending === 0) setStatus("Saved. Everyone can see your card on the live board.");
+    }, function () {
+      pending--;
+      setStatus("Could not save that mark. Check your connection and tap the square again.", true);
+      if (pending === 0) { var p = mine(); if (p) { localMarks = new Set(p.marks || []); syncCard(); } }
+    });
+  }
+  async function resetCard() {
+    try { if (me) await post("/api/leave", { token: me.token }); } catch (e) {}
+    if (me) players.delete(me.id);
+    me = null; saveMe(null);
+    localMarks = new Set(); confirmReset = false; step = "join"; tab = "card";
+    draft = { name: "", code: draft.code, picks: [null, null, null] };
+    render();
+  }
+
+  /* ---------- live board ---------- */
+  function boardView() {
+    var grid = h("div", { class: "boards", id: "boards" });
+    var view = h("section", { style: "display:flex;flex-direction:column;gap:16px" },
+      h("div", { class: "boardhead" },
+        h("h2", { text: "Live board" }),
+        h("span", { class: "hint", text: "Cards update as people mark squares. This view is read only." })),
+      grid);
+    fillBoard(grid);
+    return view;
+  }
+  function fillBoard(grid) {
+    grid = grid || document.getElementById("boards");
+    if (!grid) return;
+    var list = Array.from(players.values()).sort(function (a, b) { return (a.createdAt || 0) - (b.createdAt || 0); });
+    grid.replaceChildren();
+    if (!list.length) {
+      grid.append(h("div", { class: "empty-state", text: "No cards yet. Each person's card shows up here as soon as they get one." }));
+      return;
+    }
+    var nextPrev = new Map();
+    list.forEach(function (p) {
+      var marks = new Set(p.marks || []);
+      var old = prevMarks.get(p.id);
+      nextPrev.set(p.id, marks);
+      var g = h("div", { class: "grid" });
+      (p.cells || []).forEach(function (w, i) {
+        var on = marks.has(i);
+        var fresh = on && old && !old.has(i);
+        g.append(h("div", { class: "cell" + (on ? " on" : "") + (fresh ? " pop" : "") }, w));
+      });
+      var isMe = me && p.id === me.id;
+      grid.append(h("article", { class: "mini" + (isMe ? " me" : "") },
+        h("div", { class: "top" },
+          h("div", { class: "nm" }, p.name || "Player", isMe ? h("small", { text: "You" }) : null),
+          h("div", { class: "ct", text: marks.size + "/25" })),
+        g));
+    });
+    prevMarks = nextPrev;
+  }
+
+  /* ---------- render ---------- */
+  function render() {
+    rendered = route();
+    renderNav();
+    main.replaceChildren();
+    if (rendered === "loading") main.append(h("section", { class: "panel" }, h("p", { text: "Loading your card..." })));
+    else if (rendered === "join") main.append(joinView());
+    else if (rendered === "pick") main.append(pickView());
+    else if (rendered === "card") main.append(cardView());
+    else main.append(boardView());
+  }
+
+  function onData(list) {
+    players = new Map(list.map(function (p) { return [p.id, p]; }));
+    loaded = true;
+    if (me && !players.has(me.id)) {
+      // The server forgot this card (for example it restarted).
+      me = null; saveMe(null); localMarks = new Set();
+      joinError = "The game was restarted, so your old card is gone. Enter your name to get a new one.";
+    }
+    var p = mine();
+    if (p && pending === 0) localMarks = new Set(p.marks || []);
+    if (route() !== rendered) { render(); return; }
+    renderNav();
+    if (rendered === "board") fillBoard();
+    else if (rendered === "card") syncCard();
+  }
+
+  window.addEventListener("popstate", function () {
+    var t = location.pathname === "/board" ? "board" : "card";
+    if (t !== tab) { tab = t; render(); }
+  });
+
+  render();
+
+  /* ---------- connect ---------- */
+  fetch("/api/config", { cache: "no-store" }).then(function (r) { return r.json(); }).then(function (c) {
+    WORDS = c.words || [];
+    codeRequired = !!c.codeRequired;
+    if (rendered === "join" || rendered === "pick") render();
+  }).catch(function () {
+    setNotice("Could not reach the game server. Reload the page to try again.");
+  });
+
+  var es = new EventSource("/api/stream");
+  es.onmessage = function (e) {
+    setNotice("");
+    try { onData(JSON.parse(e.data)); } catch (x) {}
+  };
+  es.onerror = function () { setNotice("Reconnecting to the game...", true); };
+
+  // Keeps the free Render service awake while this page is open.
+  setInterval(function () { fetch("/healthz", { cache: "no-store" }).catch(function () {}); }, 4 * 60 * 1000);
+})();
+</script>
+</body>
+</html>
