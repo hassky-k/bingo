@@ -26,7 +26,8 @@
   var pointsMap = {};
   var pointsSig = "";
   var codeRequired = false;
-  var SLOTS = [3, 12, 21]; // must match server.js
+  var SIZE = 25;
+  var wordsSig = "";
   var PATHS = { card: "/", board: "/board", leaderboard: "/leaderboard" };
 
   var main = document.getElementById("main");
@@ -38,15 +39,21 @@
   var loaded = false;                // first live update received
   var tab = tabFromPath();
   var step = "join";
-  var draft = { name: "", code: "", picks: [null, null, null] };
+  var draft = { name: "", code: "", cells: emptyCells(), sel: 0 };
   var joinError = "";
   var localMarks = new Set();
   var pending = 0, chain = Promise.resolve(), confirmReset = false;
   var rendered = null;
   var prevMarks = new Map();
   var cardCells = [], cardWords = [], countEl = null, statusEl = null;
-  var lbRows = new Map(), lbEmpty = null;
+  var lbRows = new Map(), lbEmpty = null, lbList = null;
 
+  function emptyCells() { var a = []; for (var i = 0; i < SIZE; i++) a.push(null); return a; }
+  function shuffle(a) {
+    a = a.slice();
+    for (var i = a.length - 1; i > 0; i--) { var j = Math.floor(Math.random() * (i + 1)); var t = a[i]; a[i] = a[j]; a[j] = t; }
+    return a;
+  }
   function tabFromPath() {
     var p = location.pathname;
     return p === "/board" ? "board" : p === "/leaderboard" ? "leaderboard" : "card";
@@ -131,7 +138,7 @@
       var v = nameInput.value.trim().replace(/\s+/g, " ");
       if (!v) { err.textContent = "Enter your first name to get a card."; return; }
       if (codeRequired && !codeInput.value.trim()) { err.textContent = "Enter the game code."; return; }
-      draft.name = v; draft.picks = [null, null, null]; step = "pick"; render();
+      draft.name = v; step = "pick"; render();
     } },
       h("div", { class: "field" }, h("label", { class: "lbl", for: "name", text: "First name" }), nameInput),
       codeRequired ? h("div", { class: "field" }, h("label", { class: "lbl", for: "code", text: "Game code" }), codeInput) : null,
@@ -139,52 +146,98 @@
       h("button", { class: "btn", type: "submit" }, "Get my card"));
     return h("section", { class: "panel" },
       h("h2", { text: "Mark a square when you hear it said." }),
-      h("p", { text: "Your card has 25 squares. You choose 3 of them from the buzzword list and the other 22 are dealt at random. Tap a square to put an X on it. Every phrase scores points, and the leaderboard ranks everyone live." }),
+      h("p", { text: "Your card has 25 squares. Put buzzwords wherever you like, let the game fill the rest at random, or have it deal the whole card for you. Tap a square to put an X on it. Every phrase scores points, and the leaderboard ranks everyone live." }),
       form);
   }
 
-  /* ---------- pick 3 ---------- */
+  /* ---------- build your card ---------- */
+  function filledCount() { return draft.cells.filter(Boolean).length; }
+  function placedAt(w) {
+    for (var i = 0; i < SIZE; i++) if (draft.cells[i] && draft.cells[i].w === w) return i;
+    return -1;
+  }
+  function nextEmpty(from) {
+    for (var k = 0; k < SIZE; k++) { var i = (from + k) % SIZE; if (!draft.cells[i]) return i; }
+    return -1;
+  }
+  function chooseWord(w) {
+    var at = placedAt(w);
+    if (at >= 0) { draft.cells[at] = null; draft.sel = at; render(); return; } // tap again to take it off
+    var target = draft.sel >= 0 ? draft.sel : nextEmpty(0);
+    if (target < 0) return;
+    draft.cells[target] = { w: w, manual: true };
+    draft.sel = nextEmpty(target + 1);
+    render();
+  }
+  function tapSquare(i) {
+    if (draft.sel === i && draft.cells[i]) draft.cells[i] = null; // second tap clears it
+    else draft.sel = i;
+    render();
+  }
+  function fillRandom(onlyEmpty) {
+    var keep = onlyEmpty ? draft.cells : emptyCells();
+    var used = new Set(keep.filter(Boolean).map(function (c) { return c.w; }));
+    var rest = shuffle(WORDS.filter(function (w) { return !used.has(w); }));
+    draft.cells = keep.map(function (c) { return c || (rest.length ? { w: rest.shift(), manual: false } : null); });
+    draft.sel = nextEmpty(0);
+    render();
+  }
+  function reshuffleRandom() {
+    draft.cells = draft.cells.map(function (c) { return c && c.manual ? c : null; });
+    fillRandom(true);
+  }
   function pickView() {
-    var filled = draft.picks.filter(Boolean).length;
+    var filled = filledCount();
+    var manual = draft.cells.filter(function (c) { return c && c.manual; }).length;
+    var random = filled - manual;
+    if (draft.sel >= 0 && draft.sel >= SIZE) draft.sel = -1;
     var err = h("div", { class: "err", role: "alert" });
-    var grid = h("div", { class: "grid", "aria-label": "Your card with three squares to fill" });
-    for (var i = 0; i < 25; i++) {
-      var s = SLOTS.indexOf(i);
-      if (s >= 0) {
-        (function (s) {
-          var w = draft.picks[s];
-          grid.append(h("button", {
-            type: "button", class: "cell slot" + (w ? "" : " empty"),
-            "aria-label": w ? "Remove " + w : "Empty square, choose a phrase below",
-            onclick: function () { if (draft.picks[s]) { draft.picks[s] = null; render(); } }
-          }, w ? [h("span", { class: "w", text: w }), h("span", { class: "pts", text: pts(w) })] : "Pick"));
-        })(s);
-      } else {
-        grid.append(h("div", { class: "cell idle", "aria-hidden": "true" }));
-      }
-    }
+
+    var grid = h("div", { class: "grid build", role: "group", "aria-label": "Your card. Tap a square, then tap a phrase to put it there." });
+    draft.cells.forEach(function (c, i) {
+      var sel = draft.sel === i;
+      grid.append(h("button", {
+        type: "button",
+        class: "cell slot" + (c ? (c.manual ? " pick" : " rand") : " empty") + (sel ? " sel" : ""),
+        "aria-pressed": sel ? "true" : "false",
+        "aria-label": "Square " + (i + 1) + ": " + (c ? c.w + (sel ? ", tap again to clear" : "") : "empty"),
+        onclick: function () { tapSquare(i); }
+      }, c ? [h("span", { class: "w", text: c.w }), h("span", { class: "pts", text: pts(c.w) })]
+           : (sel ? "Here" : "")));
+    });
+
     var chips = h("div", { class: "chips" });
     WORDS.forEach(function (w) {
-      var on = draft.picks.indexOf(w) >= 0;
+      var on = placedAt(w) >= 0;
       chips.append(h("button", {
         type: "button", class: "chip", "aria-pressed": on ? "true" : "false",
-        disabled: !on && filled >= 3,
-        onclick: function () {
-          var idx = draft.picks.indexOf(w);
-          if (idx >= 0) draft.picks[idx] = null;
-          else { var e = draft.picks.indexOf(null); if (e >= 0) draft.picks[e] = w; }
-          render();
-        }
+        disabled: !on && draft.sel < 0 && filled >= SIZE,
+        onclick: function () { chooseWord(w); }
       }, w, h("span", { class: "p", text: pts(w) + " pts" })));
     });
-    var done = h("button", { class: "btn", type: "button", disabled: filled < 3, onclick: function () { createCard(done, err); } }, "Done");
+
+    var done = h("button", { class: "btn", type: "button", disabled: filled < SIZE, onclick: function () { createCard(done, err); } }, "Done");
+    var tools = h("div", { class: "toolbar" },
+      filled < SIZE ? h("button", { class: "btn ghost", type: "button", onclick: function () { fillRandom(true); } },
+        filled === 0 ? "Fill my card randomly" : "Fill the rest randomly") : null,
+      random > 0 ? h("button", { class: "btn ghost", type: "button", onclick: reshuffleRandom },
+        manual > 0 ? "Reshuffle random squares" : "Reshuffle") : null,
+      filled > 0 ? h("button", { class: "btn ghost", type: "button", onclick: function () { draft.cells = emptyCells(); draft.sel = 0; render(); } }, "Clear card") : null);
+
+    var hint = filled < SIZE
+      ? (draft.sel >= 0 ? "Tap a phrase to put it in the highlighted square." : "Tap a square to choose where the next phrase goes.")
+      : "Your card is full. Tap a square and pick a phrase to swap it, or tap Done.";
+
     return h("section", { class: "panel" },
-      h("h2", { text: "Hi " + draft.name + ", choose your 3." }),
-      h("p", { text: "Pick the three phrases you most expect to hear. They go in the highlighted squares. The number beside each phrase is what it scores when you mark it. The rest of your card is filled at random when you tap Done." }),
+      h("h2", { text: "Hi " + draft.name + ", build your card." }),
+      h("p", { text: "Tap a square, then tap a phrase to put it there. Place as many as you like, then let the game fill the rest, or fill the whole card at random. The number beside each phrase is what it scores when you mark it." }),
       grid,
-      h("div", { class: "count", text: filled + " of 3 chosen" }),
+      h("div", { class: "meta" },
+        h("span", { class: "count", text: filled + " of " + SIZE + " filled" }),
+        h("span", { class: "hint", text: hint })),
+      tools,
       chips, err,
-      h("div", { style: "display:flex;gap:8px;flex-wrap:wrap" },
+      h("div", { class: "toolbar" },
         done,
         h("button", { class: "btn ghost", type: "button", onclick: function () { step = "join"; render(); } }, "Change name")));
   }
@@ -192,7 +245,11 @@
   async function createCard(btn, err) {
     btn.disabled = true; err.textContent = "";
     try {
-      var r = await post("/api/join", { name: draft.name, code: draft.code, picks: draft.picks });
+      var r = await post("/api/join", {
+        name: draft.name, code: draft.code,
+        cells: draft.cells.map(function (c) { return c ? c.w : null; }),
+        picks: draft.cells.filter(function (c) { return c && c.manual; }).map(function (c) { return c.w; })
+      });
       var data = await r.json().catch(function () { return {}; });
       if (!r.ok) {
         if (r.status === 403) { joinError = data.error || "That game code is not right."; step = "join"; render(); return; }
@@ -204,7 +261,7 @@
       saveMe(me);
       players.set(me.id, data.player);
       localMarks = new Set();
-      tab = "card"; step = "join";
+      tab = "card"; step = "join"; draft.cells = emptyCells(); draft.sel = 0;
       try { history.replaceState(null, "", "/"); } catch (e) {}
       render();
     } catch (e) {
@@ -243,7 +300,7 @@
     var view = h("section", { class: "panel" },
       h("div", { class: "meta" }, h("h2", { text: p.name + "'s card" }), countEl),
       grid,
-      h("div", { class: "legend" }, h("i"), h("span", { text: "Teal edges mark the 3 phrases you picked. The small number is the points a phrase scores." })),
+      h("div", { class: "legend" }, h("i"), h("span", { text: picks.length ? "Teal edges mark the phrases you placed yourself. The small number is the points a phrase scores." : "The small number is the points a phrase scores." })),
       statusEl,
       h("div", null, reset));
     syncCard();
@@ -286,7 +343,7 @@
     if (me) players.delete(me.id);
     me = null; saveMe(null);
     localMarks = new Set(); confirmReset = false; step = "join"; tab = "card";
-    draft = { name: "", code: draft.code, picks: [null, null, null] };
+    draft = { name: "", code: draft.code, cells: emptyCells(), sel: 0 };
     render();
   }
 
@@ -334,15 +391,22 @@
   /* ---------- leaderboard ---------- */
   function leaderboardView() {
     lbRows = new Map();
-    var list = h("ol", { class: "lb", id: "lb", "aria-label": "Players ranked by points" });
+    lbList = h("ol", { class: "lb", "aria-label": "Players ranked by points" });
     lbEmpty = h("div", { class: "empty-state", text: "No cards yet. Players show up here as soon as they get a card." });
     var view = h("section", { style: "display:flex;flex-direction:column;gap:16px" },
       h("div", { class: "boardhead" },
         h("h2", { text: "Leaderboard" }),
         h("span", { class: "hint", text: "Points for every phrase marked. Updates live." })),
-      list, lbEmpty);
-    updateLeaderboard();
+      lbList, lbEmpty);
+    updateLeaderboard(false); // fill it now, before it is on screen, so it never starts empty
     return view;
+  }
+  // Highest points first. Ties: more marks first, then name A to Z, then who joined first.
+  function rankOrder(a, b) {
+    return ((b.score || 0) - (a.score || 0)) ||
+      ((b.marks || []).length - (a.marks || []).length) ||
+      String(a.name || "").localeCompare(String(b.name || ""), undefined, { sensitivity: "base" }) ||
+      ((a.createdAt || 0) - (b.createdAt || 0));
   }
   function makeRow() {
     var rank = h("div", { class: "rank" });
@@ -356,24 +420,21 @@
     row._r = { rank: rank, nm: nm, bar: bari, big: big, sub: sub, score: null };
     return row;
   }
-  function updateLeaderboard() {
-    var list = document.getElementById("lb");
+  function updateLeaderboard(animate) {
+    var list = lbList;
     if (!list) return;
-    var arr = Array.from(players.values()).sort(function (a, b) {
-      return ((b.score || 0) - (a.score || 0)) ||
-        ((b.marks || []).length - (a.marks || []).length) ||
-        ((a.createdAt || 0) - (b.createdAt || 0));
-    });
+    var arr = Array.from(players.values()).sort(rankOrder);
     lbEmpty.hidden = arr.length > 0;
 
+    var move = animate !== false && list.isConnected && !reduced();
     var before = new Map();
-    lbRows.forEach(function (el, id) { before.set(id, el.getBoundingClientRect().top); });
+    if (move) lbRows.forEach(function (el, id) { before.set(id, el.getBoundingClientRect().top); });
 
     var top = arr.length ? (arr[0].score || 0) : 0;
     var present = new Set(), rank = 0, prev = null;
     arr.forEach(function (p, idx) {
       var score = p.score || 0;
-      if (prev === null || score !== prev) rank = idx + 1;
+      if (prev === null || score !== prev) rank = idx + 1; // equal points share a rank (1, 1, 3)
       prev = score;
       present.add(p.id);
       var row = lbRows.get(p.id);
@@ -387,15 +448,15 @@
       r.bar.style.width = (top > 0 ? Math.round(score / top * 100) : 0) + "%";
       r.big.textContent = String(score);
       r.sub.textContent = "pts · " + n + (n === 1 ? " mark" : " marks");
-      if (r.score !== null && score > r.score && !reduced()) {
+      if (move && r.score !== null && score > r.score) {
         r.big.animate([{ transform: "scale(1.3)" }, { transform: "none" }], { duration: 300, easing: "ease-out" });
       }
       r.score = score;
-      list.append(row); // appending an existing row moves it into rank order
+      if (list.children[idx] !== row) list.insertBefore(row, list.children[idx] || null); // put it in rank order
     });
     lbRows.forEach(function (el, id) { if (!present.has(id)) { el.remove(); lbRows.delete(id); } });
 
-    if (!reduced()) {
+    if (move) {
       arr.forEach(function (p) {
         var el = lbRows.get(p.id), old = before.get(p.id);
         if (old == null) return;
@@ -408,6 +469,7 @@
   /* ---------- render ---------- */
   function render() {
     rendered = route();
+    lbList = null; cardCells = []; countEl = null; statusEl = null;
     renderNav();
     main.replaceChildren();
     if (rendered === "loading") main.append(h("section", { class: "panel" }, h("p", { text: "Loading your card..." })));
@@ -418,11 +480,21 @@
     else main.append(boardView());
   }
 
+  function setWords(list) {
+    WORDS = (list || []).map(function (w) { return w.text; });
+    (list || []).forEach(function (w) { pointsMap[w.text] = w.points; });
+    // Drop anything on a card being built that the host has since removed or renamed.
+    draft.cells = draft.cells.map(function (c) { return c && WORDS.indexOf(c.w) >= 0 ? c : null; });
+  }
   function onData(msg) {
+    var wsig = JSON.stringify(msg.words || []);
+    var wordsChanged = wsig !== wordsSig;
+    wordsSig = wsig;
     var np = msg.points || {};
     var sig = JSON.stringify(np);
     var pointsChanged = sig !== pointsSig;
     pointsSig = sig; pointsMap = np;
+    if (msg.words) setWords(msg.words);
     players = new Map((msg.players || []).map(function (p) { return [p.id, p]; }));
     loaded = true;
     if (me && !players.has(me.id)) {
@@ -433,7 +505,7 @@
     var p = mine();
     if (p && pending === 0) localMarks = new Set(p.marks || []);
     if (route() !== rendered) { render(); return; }
-    if (pointsChanged && rendered === "pick") { render(); return; }
+    if ((pointsChanged || wordsChanged) && rendered === "pick") { render(); return; }
     renderNav();
     if (rendered === "board") fillBoard();
     else if (rendered === "leaderboard") updateLeaderboard();
@@ -449,9 +521,9 @@
 
   /* ---------- connect ---------- */
   fetch("/api/config", { cache: "no-store" }).then(function (r) { return r.json(); }).then(function (c) {
-    WORDS = (c.words || []).map(function (w) { return w.text; });
     codeRequired = !!c.codeRequired;
-    if (!pointsSig) (c.words || []).forEach(function (w) { pointsMap[w.text] = w.points; });
+    if (c.cardSize) SIZE = c.cardSize;
+    if (!wordsSig) setWords(c.words);
     if (rendered === "join" || rendered === "pick") render();
   }).catch(function () {
     setNotice("Could not reach the game server. Reload the page to try again.");
