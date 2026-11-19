@@ -1,0 +1,13 @@
+{
+  "name": "wip-sip-bingo",
+  "version": "1.0.0",
+  "description": "Live all-hands bingo for WIP & SIP",
+  "private": true,
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

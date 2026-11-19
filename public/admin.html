@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en-AU">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>WIP &amp; SIP Admin</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..800&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <h1>WIP <span class="amp">&amp;</span> SIP</h1>
+      <div class="sub">Admin</div>
+    </div>
+    <nav aria-label="Pages">
+      <a class="tab" href="/">Game</a>
+      <a class="tab" href="/leaderboard">Leaderboard</a>
+    </nav>
+  </header>
+  <main id="main"></main>
+</div>
+
+<script>
+(function () {
+  var main = document.getElementById("main");
+  var code = "", cfg = null, known = {}, rows = new Map(), pending = new Set(), es = null;
+  try { code = sessionStorage.getItem("wipsip-admin") || ""; } catch (e) {}
+
+  function h(tag, props) {
+    var el = document.createElement(tag);
+    props = props || {};
+    Object.keys(props).forEach(function (k) {
+      var v = props[k];
+      if (v === false || v == null) return;
+      if (k === "class") el.className = v;
+      else if (k === "text") el.textContent = v;
+      else if (k.slice(0, 2) === "on") el.addEventListener(k.slice(2), v);
+      else if (v === true) el.setAttribute(k, "");
+      else el.setAttribute(k, v);
+    });
+    for (var i = 2; i < arguments.length; i++) {
+      var c = arguments[i];
+      if (c == null || c === false) continue;
+      el.append(c.nodeType ? c : document.createTextNode(c));
+    }
+    return el;
+  }
+  function api(path, opts) {
+    opts = opts || {};
+    opts.headers = Object.assign({ "x-admin-code": code }, opts.headers || {});
+    opts.cache = "no-store";
+    return fetch(path, opts);
+  }
+  function remember(v) { try { if (v) sessionStorage.setItem("wipsip-admin", v); else sessionStorage.removeItem("wipsip-admin"); } catch (e) {} }
+
+  function signOut(msg) {
+    code = ""; remember("");
+    if (es) { es.close(); es = null; }
+    loginView(msg || "");
+  }
+
+  /* ---------- sign in ---------- */
+  function loginView(message) {
+    main.replaceChildren();
+    var input = h("input", { type: "password", id: "acode", autocomplete: "current-password", placeholder: "Admin code" });
+    var err = h("div", { class: "err", role: "alert", text: message || "" });
+    var btn = h("button", { class: "btn", type: "submit" }, "Open admin");
+    var form = h("form", { class: "join", onsubmit: function (e) {
+      e.preventDefault();
+      if (!input.value) { err.textContent = "Enter the admin code."; return; }
+      code = input.value; btn.disabled = true; err.textContent = "";
+      check(function (ok, text) {
+        btn.disabled = false;
+        if (ok) { remember(code); showAdmin(); } else { code = ""; err.textContent = text; }
+      });
+    } },
+      h("div", { class: "field" }, h("label", { class: "lbl", for: "acode", text: "Admin code" }), input),
+      err, btn);
+    main.append(h("section", { class: "panel" },
+      h("h2", { text: "Change the phrase points." }),
+      h("p", { text: "Enter the admin code that was set as ADMIN_CODE on the server." }),
+      form));
+    input.focus();
+  }
+  function check(done) {
+    api("/api/admin/check").then(function (r) {
+      if (r.ok) return done(true);
+      r.json().then(function (d) { done(false, d.error || "Could not sign in."); }, function () { done(false, "Could not sign in."); });
+    }, function () { done(false, "Could not reach the server. Check your connection."); });
+  }
+
+  /* ---------- points editor ---------- */
+  function showAdmin() {
+    main.replaceChildren();
+    main.append(h("section", { class: "panel" }, h("p", { text: "Loading phrases..." })));
+    fetch("/api/config", { cache: "no-store" }).then(function (r) { return r.json(); }).then(function (c) {
+      cfg = c;
+      known = {};
+      c.words.forEach(function (w) { known[w.text] = w.points; });
+      drawEditor();
+      es = new EventSource("/api/stream");
+      es.onmessage = function (e) {
+        try {
+          var m = JSON.parse(e.data);
+          Object.keys(m.points || {}).forEach(function (w) {
+            known[w] = m.points[w];
+            var row = rows.get(w);
+            if (row && !pending.has(w)) row.sel.value = String(known[w]);
+          });
+        } catch (x) {}
+      };
+    }).catch(function () { signOut("Could not load the phrases. Reload the page and try again."); });
+  }
+
+  function drawEditor() {
+    main.replaceChildren();
+    rows = new Map();
+    var note = h("div", { class: "status", "aria-live": "polite", style: "min-height:0" });
+    var exportBox = h("div", { hidden: true });
+    var list = h("ul", { class: "alist" });
+    cfg.words.forEach(function (w) {
+      var sel = h("select", { "aria-label": "Points for " + w.text });
+      for (var v = cfg.pointsMin; v <= cfg.pointsMax; v += cfg.pointsStep) {
+        sel.append(h("option", { value: String(v), text: String(v) }));
+      }
+      sel.value = String(known[w.text]);
+      var st = h("span", { class: "st", "aria-live": "polite" });
+      sel.addEventListener("change", function () { save(w.text, sel, st); });
+      rows.set(w.text, { sel: sel, st: st });
+      list.append(h("li", { class: "arow" }, h("span", { class: "t", text: w.text }), st, sel));
+    });
+
+    var copy = h("button", { class: "btn ghost", type: "button", onclick: function () {
+      var text = "[\n" + cfg.words.map(function (w) { return "  " + JSON.stringify({ text: w.text, points: known[w.text] }); }).join(",\n") + "\n]\n";
+      exportBox.replaceChildren(); exportBox.hidden = true;
+      var done = function () { note.textContent = "Copied. Paste it over words.json and redeploy to keep these points after a restart."; };
+      var fallback = function () {
+        var ta = h("textarea", { class: "export", "aria-label": "words.json contents", readonly: true });
+        ta.value = text; exportBox.append(ta); exportBox.hidden = false; ta.focus(); ta.select();
+        note.textContent = "Select all, copy, then paste it over words.json.";
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, fallback);
+      else fallback();
+    } }, "Copy as words.json");
+    var out = h("button", { class: "btn ghost", type: "button", onclick: function () { signOut(); } }, "Sign out");
+
+    main.append(h("section", { style: "display:flex;flex-direction:column;gap:16px" },
+      h("div", { class: "panel" },
+        h("h2", { text: "Phrase points" }),
+        h("p", { text: "Pick " + cfg.pointsMin + " to " + cfg.pointsMax + " points for each phrase. A change saves straight away and re-scores everyone. Points go back to words.json when the service restarts, so use Copy as words.json to keep a set." })),
+      h("div", { class: "toolbar" }, copy, out),
+      note, exportBox, list));
+  }
+
+  function save(word, sel, st) {
+    var v = Number(sel.value);
+    pending.add(word);
+    st.className = "st"; st.textContent = "Saving...";
+    api("/api/admin/points", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ word: word, points: v }) })
+      .then(function (r) { return r.json().catch(function () { return {}; }).then(function (d) { return { r: r, d: d }; }); })
+      .then(function (x) {
+        pending.delete(word);
+        if (!x.r.ok) {
+          sel.value = String(known[word]);
+          if (x.r.status === 401) return signOut(x.d.error || "That admin code is not right.");
+          st.className = "st bad"; st.textContent = "Not saved";
+          return;
+        }
+        known = x.d.points || known;
+        st.textContent = "Saved";
+        setTimeout(function () { if (st.textContent === "Saved") st.textContent = ""; }, 1800);
+      }, function () {
+        pending.delete(word);
+        sel.value = String(known[word]);
+        st.className = "st bad"; st.textContent = "Not saved";
+      });
+  }
+
+  if (code) {
+    check(function (ok) { if (ok) showAdmin(); else { code = ""; remember(""); loginView(""); } });
+  } else {
+    loginView("");
+  }
+})();
+</script>
+</body>
+</html>

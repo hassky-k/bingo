@@ -1,0 +1,472 @@
+<!doctype html>
+<html lang="en-AU">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>WIP &amp; SIP Bingo</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..800&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <h1>WIP <span class="amp">&amp;</span> SIP</h1>
+      <div class="sub">All hands bingo</div>
+    </div>
+    <nav id="nav" aria-label="Views"></nav>
+  </header>
+  <div id="notice" class="notice" hidden></div>
+  <main id="main"></main>
+</div>
+
+<script>
+(function () {
+  var WORDS = [];
+  var pointsMap = {};
+  var pointsSig = "";
+  var codeRequired = false;
+  var SLOTS = [3, 12, 21]; // must match server.js
+  var PATHS = { card: "/", board: "/board", leaderboard: "/leaderboard" };
+
+  var main = document.getElementById("main");
+  var navEl = document.getElementById("nav");
+  var noticeEl = document.getElementById("notice");
+
+  var players = new Map();
+  var me = loadMe();                 // { id, token } once this browser has a card
+  var loaded = false;                // first live update received
+  var tab = tabFromPath();
+  var step = "join";
+  var draft = { name: "", code: "", picks: [null, null, null] };
+  var joinError = "";
+  var localMarks = new Set();
+  var pending = 0, chain = Promise.resolve(), confirmReset = false;
+  var rendered = null;
+  var prevMarks = new Map();
+  var cardCells = [], cardWords = [], countEl = null, statusEl = null;
+  var lbRows = new Map(), lbEmpty = null;
+
+  function tabFromPath() {
+    var p = location.pathname;
+    return p === "/board" ? "board" : p === "/leaderboard" ? "leaderboard" : "card";
+  }
+  function loadMe() {
+    try { var v = JSON.parse(localStorage.getItem("wipsip-me")); if (v && v.id && v.token) return v; } catch (e) {}
+    return null;
+  }
+  function saveMe(v) {
+    try { if (v) localStorage.setItem("wipsip-me", JSON.stringify(v)); else localStorage.removeItem("wipsip-me"); } catch (e) {}
+  }
+  function reduced() { return window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches; }
+  function pts(w) { return pointsMap[w] != null ? String(pointsMap[w]) : ""; }
+
+  function h(tag, props) {
+    var el = document.createElement(tag);
+    props = props || {};
+    Object.keys(props).forEach(function (k) {
+      var v = props[k];
+      if (v === false || v == null) return;
+      if (k === "class") el.className = v;
+      else if (k === "text") el.textContent = v;
+      else if (k.slice(0, 2) === "on") el.addEventListener(k.slice(2), v);
+      else if (v === true) el.setAttribute(k, "");
+      else el.setAttribute(k, v);
+    });
+    for (var i = 2; i < arguments.length; i++) {
+      var c = arguments[i];
+      if (c == null || c === false) continue;
+      if (Array.isArray(c)) c.forEach(function (x) { if (x) el.append(x.nodeType ? x : document.createTextNode(x)); });
+      else el.append(c.nodeType ? c : document.createTextNode(c));
+    }
+    return el;
+  }
+
+  function post(path, body) {
+    return fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  }
+  function setNotice(text, info) {
+    if (!text) { noticeEl.hidden = true; return; }
+    noticeEl.className = "notice" + (info ? " info" : "");
+    noticeEl.textContent = text;
+    noticeEl.hidden = false;
+  }
+
+  function mine() { return me ? players.get(me.id) : null; }
+  function route() {
+    if (tab === "board") return "board";
+    if (tab === "leaderboard") return "leaderboard";
+    if (me && !loaded) return "loading";
+    if (mine()) return "card";
+    return step;
+  }
+
+  /* ---------- navigation ---------- */
+  function setTab(t) {
+    tab = t;
+    try { history.pushState(null, "", PATHS[t]); } catch (e) {}
+    render();
+  }
+  function tabBtn(key, label, count) {
+    return h("button", { class: "tab", type: "button", "aria-current": tab === key ? "true" : "false", onclick: function () { setTab(key); } },
+      label, count == null ? null : h("span", { class: "n", text: String(count) }));
+  }
+  function renderNav() {
+    navEl.replaceChildren();
+    if (mine()) navEl.append(tabBtn("card", "My card"));
+    else if (tab !== "card") navEl.append(h("button", { class: "tab", type: "button", onclick: function () { setTab("card"); } }, "Join the game"));
+    navEl.append(tabBtn("leaderboard", "Leaderboard"), tabBtn("board", "Live board", players.size));
+  }
+
+  /* ---------- join ---------- */
+  function joinView() {
+    var nameInput = h("input", { type: "text", id: "name", maxlength: "24", autocomplete: "given-name", placeholder: "e.g. Sam", value: draft.name,
+      oninput: function () { draft.name = nameInput.value; } });
+    var codeInput = codeRequired ? h("input", { type: "text", id: "code", maxlength: "40", autocomplete: "off", placeholder: "Game code", value: draft.code,
+      oninput: function () { draft.code = codeInput.value; } }) : null;
+    var err = h("div", { class: "err", role: "alert", text: joinError });
+    joinError = "";
+    var form = h("form", { class: "join", onsubmit: function (e) {
+      e.preventDefault();
+      var v = nameInput.value.trim().replace(/\s+/g, " ");
+      if (!v) { err.textContent = "Enter your first name to get a card."; return; }
+      if (codeRequired && !codeInput.value.trim()) { err.textContent = "Enter the game code."; return; }
+      draft.name = v; draft.picks = [null, null, null]; step = "pick"; render();
+    } },
+      h("div", { class: "field" }, h("label", { class: "lbl", for: "name", text: "First name" }), nameInput),
+      codeRequired ? h("div", { class: "field" }, h("label", { class: "lbl", for: "code", text: "Game code" }), codeInput) : null,
+      err,
+      h("button", { class: "btn", type: "submit" }, "Get my card"));
+    return h("section", { class: "panel" },
+      h("h2", { text: "Mark a square when you hear it said." }),
+      h("p", { text: "Your card has 25 squares. You choose 3 of them from the buzzword list and the other 22 are dealt at random. Tap a square to put an X on it. Every phrase scores points, and the leaderboard ranks everyone live." }),
+      form);
+  }
+
+  /* ---------- pick 3 ---------- */
+  function pickView() {
+    var filled = draft.picks.filter(Boolean).length;
+    var err = h("div", { class: "err", role: "alert" });
+    var grid = h("div", { class: "grid", "aria-label": "Your card with three squares to fill" });
+    for (var i = 0; i < 25; i++) {
+      var s = SLOTS.indexOf(i);
+      if (s >= 0) {
+        (function (s) {
+          var w = draft.picks[s];
+          grid.append(h("button", {
+            type: "button", class: "cell slot" + (w ? "" : " empty"),
+            "aria-label": w ? "Remove " + w : "Empty square, choose a phrase below",
+            onclick: function () { if (draft.picks[s]) { draft.picks[s] = null; render(); } }
+          }, w ? [h("span", { class: "w", text: w }), h("span", { class: "pts", text: pts(w) })] : "Pick"));
+        })(s);
+      } else {
+        grid.append(h("div", { class: "cell idle", "aria-hidden": "true" }));
+      }
+    }
+    var chips = h("div", { class: "chips" });
+    WORDS.forEach(function (w) {
+      var on = draft.picks.indexOf(w) >= 0;
+      chips.append(h("button", {
+        type: "button", class: "chip", "aria-pressed": on ? "true" : "false",
+        disabled: !on && filled >= 3,
+        onclick: function () {
+          var idx = draft.picks.indexOf(w);
+          if (idx >= 0) draft.picks[idx] = null;
+          else { var e = draft.picks.indexOf(null); if (e >= 0) draft.picks[e] = w; }
+          render();
+        }
+      }, w, h("span", { class: "p", text: pts(w) + " pts" })));
+    });
+    var done = h("button", { class: "btn", type: "button", disabled: filled < 3, onclick: function () { createCard(done, err); } }, "Done");
+    return h("section", { class: "panel" },
+      h("h2", { text: "Hi " + draft.name + ", choose your 3." }),
+      h("p", { text: "Pick the three phrases you most expect to hear. They go in the highlighted squares. The number beside each phrase is what it scores when you mark it. The rest of your card is filled at random when you tap Done." }),
+      grid,
+      h("div", { class: "count", text: filled + " of 3 chosen" }),
+      chips, err,
+      h("div", { style: "display:flex;gap:8px;flex-wrap:wrap" },
+        done,
+        h("button", { class: "btn ghost", type: "button", onclick: function () { step = "join"; render(); } }, "Change name")));
+  }
+
+  async function createCard(btn, err) {
+    btn.disabled = true; err.textContent = "";
+    try {
+      var r = await post("/api/join", { name: draft.name, code: draft.code, picks: draft.picks });
+      var data = await r.json().catch(function () { return {}; });
+      if (!r.ok) {
+        if (r.status === 403) { joinError = data.error || "That game code is not right."; step = "join"; render(); return; }
+        btn.disabled = false;
+        err.textContent = data.error || "Could not save your card. Tap Done to try again.";
+        return;
+      }
+      me = { id: data.id, token: data.token };
+      saveMe(me);
+      players.set(me.id, data.player);
+      localMarks = new Set();
+      tab = "card"; step = "join";
+      try { history.replaceState(null, "", "/"); } catch (e) {}
+      render();
+    } catch (e) {
+      btn.disabled = false;
+      err.textContent = "Could not reach the game. Check your connection and tap Done again.";
+    }
+  }
+
+  /* ---------- my card ---------- */
+  function myScore() {
+    var p = mine(), s = 0;
+    if (!p) return 0;
+    localMarks.forEach(function (i) { s += pointsMap[p.cells[i]] || 0; });
+    return s;
+  }
+  function cardView() {
+    var p = mine();
+    var picks = p.picks || [];
+    cardCells = []; cardWords = p.cells;
+    var grid = h("div", { class: "grid", role: "group", "aria-label": "Your bingo card" });
+    p.cells.forEach(function (w, i) {
+      var b = h("button", {
+        type: "button", class: "cell" + (picks.indexOf(w) >= 0 ? " pick" : ""),
+        "aria-pressed": localMarks.has(i) ? "true" : "false",
+        onclick: function () { toggle(i); }
+      }, h("span", { class: "w", text: w }), h("span", { class: "pts", text: pts(w) }));
+      cardCells.push(b);
+      grid.append(b);
+    });
+    countEl = h("span", { class: "count" });
+    statusEl = h("div", { class: "status", "aria-live": "polite" });
+    var reset = h("button", { class: "btn ghost", type: "button", onclick: function () {
+      if (!confirmReset) { confirmReset = true; reset.textContent = "Tap again to delete this card"; reset.classList.add("danger"); return; }
+      resetCard();
+    } }, "Start over with a new card");
+    var view = h("section", { class: "panel" },
+      h("div", { class: "meta" }, h("h2", { text: p.name + "'s card" }), countEl),
+      grid,
+      h("div", { class: "legend" }, h("i"), h("span", { text: "Teal edges mark the 3 phrases you picked. The small number is the points a phrase scores." })),
+      statusEl,
+      h("div", null, reset));
+    syncCard();
+    return view;
+  }
+  function syncCard() {
+    cardCells.forEach(function (b, i) {
+      var on = localMarks.has(i);
+      b.classList.toggle("on", on);
+      b.setAttribute("aria-pressed", on ? "true" : "false");
+      var el = b.querySelector(".pts");
+      if (el) el.textContent = pts(cardWords[i]);
+    });
+    if (countEl) countEl.textContent = localMarks.size + " of 25 marked · " + myScore() + " pts";
+  }
+  function setStatus(text, bad) {
+    if (!statusEl) return;
+    statusEl.className = "status" + (bad ? " bad" : "");
+    statusEl.textContent = text;
+  }
+  function toggle(i) {
+    var on = !localMarks.has(i);
+    if (on) localMarks.add(i); else localMarks.delete(i);
+    syncCard();
+    setStatus("Saving...");
+    pending++;
+    chain = chain.then(function () {
+      return post("/api/mark", { token: me.token, index: i, on: on }).then(function (r) { if (!r.ok) throw new Error("mark failed"); });
+    }).then(function () {
+      pending--;
+      if (pending === 0) setStatus("Saved. Everyone can see your card and points.");
+    }, function () {
+      pending--;
+      setStatus("Could not save that mark. Check your connection and tap the square again.", true);
+      if (pending === 0) { var p = mine(); if (p) { localMarks = new Set(p.marks || []); syncCard(); } }
+    });
+  }
+  async function resetCard() {
+    try { if (me) await post("/api/leave", { token: me.token }); } catch (e) {}
+    if (me) players.delete(me.id);
+    me = null; saveMe(null);
+    localMarks = new Set(); confirmReset = false; step = "join"; tab = "card";
+    draft = { name: "", code: draft.code, picks: [null, null, null] };
+    render();
+  }
+
+  /* ---------- live board ---------- */
+  function boardView() {
+    var grid = h("div", { class: "boards", id: "boards" });
+    var view = h("section", { style: "display:flex;flex-direction:column;gap:16px" },
+      h("div", { class: "boardhead" },
+        h("h2", { text: "Live board" }),
+        h("span", { class: "hint", text: "Cards update as people mark squares. This view is read only." })),
+      grid);
+    fillBoard(grid);
+    return view;
+  }
+  function fillBoard(grid) {
+    grid = grid || document.getElementById("boards");
+    if (!grid) return;
+    var list = Array.from(players.values()).sort(function (a, b) { return (a.createdAt || 0) - (b.createdAt || 0); });
+    grid.replaceChildren();
+    if (!list.length) {
+      grid.append(h("div", { class: "empty-state", text: "No cards yet. Each person's card shows up here as soon as they get one." }));
+      return;
+    }
+    var nextPrev = new Map();
+    list.forEach(function (p) {
+      var marks = new Set(p.marks || []);
+      var old = prevMarks.get(p.id);
+      nextPrev.set(p.id, marks);
+      var g = h("div", { class: "grid" });
+      (p.cells || []).forEach(function (w, i) {
+        var on = marks.has(i);
+        var fresh = on && old && !old.has(i);
+        g.append(h("div", { class: "cell" + (on ? " on" : "") + (fresh ? " pop" : "") }, w));
+      });
+      var isMe = me && p.id === me.id;
+      grid.append(h("article", { class: "mini" + (isMe ? " me" : "") },
+        h("div", { class: "top" },
+          h("div", { class: "nm" }, p.name || "Player", isMe ? h("small", { text: "You" }) : null),
+          h("div", { class: "ct", text: marks.size + "/25 · " + (p.score || 0) + " pts" })),
+        g));
+    });
+    prevMarks = nextPrev;
+  }
+
+  /* ---------- leaderboard ---------- */
+  function leaderboardView() {
+    lbRows = new Map();
+    var list = h("ol", { class: "lb", id: "lb", "aria-label": "Players ranked by points" });
+    lbEmpty = h("div", { class: "empty-state", text: "No cards yet. Players show up here as soon as they get a card." });
+    var view = h("section", { style: "display:flex;flex-direction:column;gap:16px" },
+      h("div", { class: "boardhead" },
+        h("h2", { text: "Leaderboard" }),
+        h("span", { class: "hint", text: "Points for every phrase marked. Updates live." })),
+      list, lbEmpty);
+    updateLeaderboard();
+    return view;
+  }
+  function makeRow() {
+    var rank = h("div", { class: "rank" });
+    var nm = h("div", { class: "nm" });
+    var bari = h("i");
+    var big = h("b");
+    var sub = h("span", { class: "sub" });
+    var row = h("li", { class: "lbrow" }, rank,
+      h("div", { class: "who" }, nm, h("div", { class: "bar", "aria-hidden": "true" }, bari)),
+      h("div", { class: "sc" }, big, sub));
+    row._r = { rank: rank, nm: nm, bar: bari, big: big, sub: sub, score: null };
+    return row;
+  }
+  function updateLeaderboard() {
+    var list = document.getElementById("lb");
+    if (!list) return;
+    var arr = Array.from(players.values()).sort(function (a, b) {
+      return ((b.score || 0) - (a.score || 0)) ||
+        ((b.marks || []).length - (a.marks || []).length) ||
+        ((a.createdAt || 0) - (b.createdAt || 0));
+    });
+    lbEmpty.hidden = arr.length > 0;
+
+    var before = new Map();
+    lbRows.forEach(function (el, id) { before.set(id, el.getBoundingClientRect().top); });
+
+    var top = arr.length ? (arr[0].score || 0) : 0;
+    var present = new Set(), rank = 0, prev = null;
+    arr.forEach(function (p, idx) {
+      var score = p.score || 0;
+      if (prev === null || score !== prev) rank = idx + 1;
+      prev = score;
+      present.add(p.id);
+      var row = lbRows.get(p.id);
+      if (!row) { row = makeRow(); lbRows.set(p.id, row); }
+      var r = row._r, isMe = me && p.id === me.id, n = (p.marks || []).length;
+      row.classList.toggle("me", !!isMe);
+      row.classList.toggle("first", rank === 1 && score > 0);
+      r.rank.textContent = score > 0 ? String(rank) : "–";
+      r.nm.textContent = p.name || "Player";
+      if (isMe) r.nm.append(h("small", { text: "You" }));
+      r.bar.style.width = (top > 0 ? Math.round(score / top * 100) : 0) + "%";
+      r.big.textContent = String(score);
+      r.sub.textContent = "pts · " + n + (n === 1 ? " mark" : " marks");
+      if (r.score !== null && score > r.score && !reduced()) {
+        r.big.animate([{ transform: "scale(1.3)" }, { transform: "none" }], { duration: 300, easing: "ease-out" });
+      }
+      r.score = score;
+      list.append(row); // appending an existing row moves it into rank order
+    });
+    lbRows.forEach(function (el, id) { if (!present.has(id)) { el.remove(); lbRows.delete(id); } });
+
+    if (!reduced()) {
+      arr.forEach(function (p) {
+        var el = lbRows.get(p.id), old = before.get(p.id);
+        if (old == null) return;
+        var dy = old - el.getBoundingClientRect().top;
+        if (Math.abs(dy) > 1) el.animate([{ transform: "translateY(" + dy + "px)" }, { transform: "none" }], { duration: 450, easing: "cubic-bezier(.2,.8,.2,1)" });
+      });
+    }
+  }
+
+  /* ---------- render ---------- */
+  function render() {
+    rendered = route();
+    renderNav();
+    main.replaceChildren();
+    if (rendered === "loading") main.append(h("section", { class: "panel" }, h("p", { text: "Loading your card..." })));
+    else if (rendered === "join") main.append(joinView());
+    else if (rendered === "pick") main.append(pickView());
+    else if (rendered === "card") main.append(cardView());
+    else if (rendered === "leaderboard") main.append(leaderboardView());
+    else main.append(boardView());
+  }
+
+  function onData(msg) {
+    var np = msg.points || {};
+    var sig = JSON.stringify(np);
+    var pointsChanged = sig !== pointsSig;
+    pointsSig = sig; pointsMap = np;
+    players = new Map((msg.players || []).map(function (p) { return [p.id, p]; }));
+    loaded = true;
+    if (me && !players.has(me.id)) {
+      // The server forgot this card (for example it restarted).
+      me = null; saveMe(null); localMarks = new Set();
+      joinError = "The game was restarted, so your old card is gone. Enter your name to get a new one.";
+    }
+    var p = mine();
+    if (p && pending === 0) localMarks = new Set(p.marks || []);
+    if (route() !== rendered) { render(); return; }
+    if (pointsChanged && rendered === "pick") { render(); return; }
+    renderNav();
+    if (rendered === "board") fillBoard();
+    else if (rendered === "leaderboard") updateLeaderboard();
+    else if (rendered === "card") syncCard();
+  }
+
+  window.addEventListener("popstate", function () {
+    var t = tabFromPath();
+    if (t !== tab) { tab = t; render(); }
+  });
+
+  render();
+
+  /* ---------- connect ---------- */
+  fetch("/api/config", { cache: "no-store" }).then(function (r) { return r.json(); }).then(function (c) {
+    WORDS = (c.words || []).map(function (w) { return w.text; });
+    codeRequired = !!c.codeRequired;
+    if (!pointsSig) (c.words || []).forEach(function (w) { pointsMap[w.text] = w.points; });
+    if (rendered === "join" || rendered === "pick") render();
+  }).catch(function () {
+    setNotice("Could not reach the game server. Reload the page to try again.");
+  });
+
+  var es = new EventSource("/api/stream");
+  es.onmessage = function (e) {
+    setNotice("");
+    try { onData(JSON.parse(e.data)); } catch (x) {}
+  };
+  es.onerror = function () { setNotice("Reconnecting to the game...", true); };
+
+  // Keeps the free Render service awake while this page is open.
+  setInterval(function () { fetch("/healthz", { cache: "no-store" }).catch(function () {}); }, 4 * 60 * 1000);
+})();
+</script>
+</body>
+</html>
